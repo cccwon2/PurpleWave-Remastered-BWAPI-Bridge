@@ -18,10 +18,11 @@ Canonical store copy: `/cursor/stores/self/docs/purplewave-pylon-stall-classify.
 
 | Item | Result |
 |---|---|
-| Prior Move tip | **rc3** loaded (pid 31376) — Move→`0x14` working; pylon still missing |
-| Tip on GitHub (PR #44) | `c523b7b` / **`jbwapi_server_v2_rc3_state1`** (`build.ps1` embeds string into DLL) |
-| Won build confirm | `build.ps1` printed state1 |
-| Live C paste (pid **38364**) | started revision still **`jbwapi_server_v2_rc3`** — **not** state1; no `jbwapi_build_hold_*` (expected). Stale SCR-mapped DLL. **Not PASS.** Redeploy per store classify deploy checklist. |
+| Tip | Pluto `c523b7b` / **`jbwapi_server_v2_rc3_state1`** |
+| Correct log | `bridge_5970` pid **31524** state1 + hold_* (store: `internal/bridge_5970.log`) |
+| Stale pid 38364 | rc3 — ignore |
+| S0 (5970) | Probe **id=2** Move-to-site while mins briefly &lt;100 = expected; minerals climb; site vis/exp/build OK, occ false; **0 Build** in queue. **No bridge fix** — not confirmed bad GameData |
+| Next | Separate diag JAR for A1/A2; keep validated JAR. **Not PASS** |
 
 ## Pin the validated JAR (every retest)
 
