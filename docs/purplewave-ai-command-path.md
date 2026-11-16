@@ -15,3 +15,7 @@ Exclusive control:
 Operator live-run checklist lives in the Project store: `docs/purplewave-live-run.md`.
 
 Probe A/B baseline remains valid for connect/read-only validation; do not treat Probe PASS as AI command PASS.
+
+## Vendored PurpleWave Remaster scripts
+
+See [`purplewave-remaster/`](purplewave-remaster/) — copy into the PurpleWave clone if that repo is not writable from CI/agents.
