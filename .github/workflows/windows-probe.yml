@@ -102,6 +102,9 @@ jobs:
           } else {
             Write-Warning "Got exit 7 on Windows no-bridge; inspect JSONL errorCode (not assumed Remastered)"
           }
+          # Run-Probe leaves $LASTEXITCODE=6/7; force success after validation so
+          # the Actions pwsh step does not inherit that non-zero code.
+          exit 0
 
       - name: Upload failure/test artifacts
         if: always()
