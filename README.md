@@ -107,3 +107,7 @@ Game-less Windows CI: `.github/workflows/windows-probe.yml` (Java 8 x64 **baseli
 - No bridge implementation is included here
 - `BWClient` has no public stop API — scripts kill **only** the probe PID this script started
 - Java 32-bit vs 64-bit for Remastered is **unverified**
+
+## Full PurpleWave AI
+
+Probe remains read-only. For exclusive AI command path via Pluto `jbwapi_server_v2`, see [`docs/purplewave-ai-command-path.md`](docs/purplewave-ai-command-path.md).
