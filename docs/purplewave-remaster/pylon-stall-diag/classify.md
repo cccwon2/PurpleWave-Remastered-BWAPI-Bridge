@@ -19,8 +19,9 @@ Canonical store copy: `/cursor/stores/self/docs/purplewave-pylon-stall-classify.
 | Item | Result |
 |---|---|
 | Prior Move tip | **rc3** loaded (pid 31376) — Move→`0x14` working; pylon still missing |
-| This tip | Pluto **`jbwapi_server_v2_rc3_state1`**: rate-limited `jbwapi_build_hold_*` GameData samples (not an encoder change) |
-| Full rc3 paste file | Still missing on disk; prefer Won upload of next `bridge.log` |
+| Tip on GitHub (PR #44) | `c523b7b` / **`jbwapi_server_v2_rc3_state1`** (`build.ps1` embeds string into DLL) |
+| Won build confirm | `build.ps1` printed state1 |
+| Live C paste (pid **38364**) | started revision still **`jbwapi_server_v2_rc3`** — **not** state1; no `jbwapi_build_hold_*` (expected). Stale SCR-mapped DLL. **Not PASS.** Redeploy per store classify deploy checklist. |
 
 ## Pin the validated JAR (every retest)
 
