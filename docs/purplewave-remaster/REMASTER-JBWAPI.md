@@ -50,6 +50,12 @@ Gameless unit tests (optional, long): `mvn test` — not a live SCR claim.
 5. Start / join a match in SCR.
 6. Confirm bridge log stages `jbwapi_client_connected`, `jbwapi_client_commands_apply`, `jbwapi_unit_commands_result` with `packets_submitted` > 0 when the bot acts.
 
+## MatchStart vs own units (Live C NPE)
+
+JBWAPI processes **MatchStart → onStart** before **UnitDiscover**. Under Pluto Snapshot that means `game.self.getUnits()` is empty during `With.onStart`. Upstream PurpleWave used `maxBy` on that list, then `tryCatch` NPEd on a null `With.logger` (stack at `PurpleWave.scala:100`).
+
+Apply `docs/purplewave-remaster/matchstart-npe/` before Live C retest. You do **not** need to delay the client until after MatchStart — you need the hardened init that uses start location + `With.ready` gating. MatchFrame before a successful onStart safely no-ops.
+
 ## Approximations / gaps
 
 - Some `Use_Tech` / `Use_Tech_Position` / `Use_Tech_Unit` (non-Archon) orders need full TechType→Order tables; encoder **rejects** rather than faking success.

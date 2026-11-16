@@ -1,0 +1,158 @@
+From cde246fb7612b669957184a322aa08fa5ab84530 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 16 Nov 2026 21:06:07 +0000
+Subject: [PATCH] Harden MatchStart init for Remaster JBWAPI (empty units +
+ tryCatch).
+
+JBWAPI runs onStart on MatchStart before UnitDiscover, so self.getUnits is
+empty; mapClock maxBy threw and tryCatch then NPEd on unset With.logger.
+Use start location for mapClock, create logger earlier, gate onFrame on
+With.ready, and make tryCatch null-safe.
+---
+ src/Lifecycle/PurpleEventListener.scala | 12 ++++++++++-
+ src/Lifecycle/PurpleWave.scala          | 16 ++++++++++++++-
+ src/Lifecycle/With.scala                | 27 ++++++++++++++++++++-----
+ 3 files changed, 48 insertions(+), 7 deletions(-)
+
+diff --git a/src/Lifecycle/PurpleEventListener.scala b/src/Lifecycle/PurpleEventListener.scala
+index 89f367c4a..8e0f58a6e 100644
+--- a/src/Lifecycle/PurpleEventListener.scala
++++ b/src/Lifecycle/PurpleEventListener.scala
+@@ -15,15 +15,25 @@ object PurpleEventListener extends BWEventListener {
+       gameCount += 1
+       bot = Some(new PurpleWave)
+       bot.foreach(_.onStart())
++      if (!With.ready) {
++        System.err.println(
++          "[PurpleWave] onStart returned without With.ready; MatchFrame will no-op until a successful init")
++      }
+     }
+     catch { case exception: Exception =>
+       lastException = Some(exception)
+       lastStackTrace = Some(exception.getStackTrace.mkString(System.lineSeparator()))
++      System.err.println("[PurpleWave] onStart failed:")
++      exception.printStackTrace(System.err)
+     }
+   }
+ 
+   override def onEnd(b: Boolean):                         Unit = { bot.foreach(_.onEnd(b)) }
+-  override def onFrame():                                 Unit = { bot.foreach(_.onFrame()) }
++  override def onFrame():                                 Unit = {
++    // Bot instance exists even when onStart failed mid-init; PurpleWave.onFrame
++    // gates on With.ready so MatchFrame before/without successful MatchStart is safe.
++    bot.foreach(_.onFrame())
++  }
+   override def onSendText(s: String):                     Unit = { bot.foreach(_.onSendText(s)) }
+   override def onReceiveText(player: Player, s: String):  Unit = { bot.foreach(_.onReceiveText(player, s)) }
+   override def onPlayerLeft(player: Player):              Unit = { bot.foreach(_.onPlayerLeft(player)) }
+diff --git a/src/Lifecycle/PurpleWave.scala b/src/Lifecycle/PurpleWave.scala
+index d3a0595c5..3b9168c97 100644
+--- a/src/Lifecycle/PurpleWave.scala
++++ b/src/Lifecycle/PurpleWave.scala
+@@ -31,6 +31,13 @@ class PurpleWave extends DefaultBWListener {
+   }
+ 
+   override def onFrame(): Unit = {
++    // MatchStart → onStart must finish before MatchFrame. If init failed
++    // (or never ran), skip so tryCatch does not NPE on a null With.logger.
++    if (!With.ready) {
++      System.err.println(
++        "[PurpleWave] onFrame skipped: With.ready=false (wait for MatchStart/onStart to finish)")
++      return
++    }
+     timeFrameZero(() => {
+       tryCatch(() => {
+         With.performance.startFrame()
+@@ -97,7 +104,14 @@ class PurpleWave extends DefaultBWListener {
+     try {
+       lambda()
+     } catch { case exception: Exception =>
+-      With.logger.onException(exception)
++      // Logger is created mid-onStart; failures before that (or a failed
++      // onStart that left ready=false) must not NPE again in the handler.
++      if (With.logger != null) {
++        With.logger.onException(exception)
++      } else {
++        System.err.println("[PurpleWave] exception before logger init:")
++        exception.printStackTrace(System.err)
++      }
+     }
+   }
+ }
+diff --git a/src/Lifecycle/With.scala b/src/Lifecycle/With.scala
+index d35097c00..2efb7a407 100644
+--- a/src/Lifecycle/With.scala
++++ b/src/Lifecycle/With.scala
+@@ -43,6 +43,9 @@ object With {
+ 
+   var frame0ms          : Long                = 0
+   var frame             : Int                 = 0
++  // True only after a full With.onStart() completes. JBWAPI MatchStart runs
++  // onStart before UnitDiscover, so callers must not assume units/systems yet.
++  var ready             : Boolean             = false
+   var self              : PlayerInfo          = _
+   var neutral           : PlayerInfo          = _
+   var enemies           : Vector[PlayerInfo]  = _
+@@ -125,6 +128,7 @@ object With {
+   def id: Long = startNanoTime
+ 
+   def onStart(): Unit = {
++    ready = false
+     startNanoTime = System.nanoTime()
+     game = PurpleBWClient.getGame
+     game.enableFlag(Flag.UserInput)
+@@ -135,15 +139,30 @@ object With {
+     // Basic data //
+     ////////////////
+ 
++    // JBWAPI EventHandler calls onStart on MatchStart before UnitDiscover, so
++    // Player.getUnits() is empty here under Remaster Snapshot + JBWAPI.
+     frame             = 0
+     proxy             = new ProxyBWAPI
+     self              = Players.get(game.self)
+     neutral           = Players.get(game.neutral)
+     enemies           = game.enemies.asScala.map(Players.get).toVector
+     friendlies        = With.self +: game.allies.asScala.map(Players.get).toVector
++    // Logger as soon as self/proxy exist so tryCatch can report mapClock / load failures.
++    bwapiData         = new BwapiData
++    configuration     = new Configuration
++    logger            = new Logger
+     mapFileName       = game.mapFileName
+     mapCleanName      = MapIdentifier(mapFileName)
+-    mapClock          = MapIdentifier.clock(new Tile(With.game.self.getUnits.asScala.maxBy(_.getHitPoints).getTilePosition).center)
++    // Prefer start location: own units are not in Game.allUnits until after
++    // MatchStart → UnitDiscover (Remaster/JBWAPI). Fall back to max HP unit
++    // when units already exist (classic BWAPI / late reconnect).
++    mapClock          = {
++      val own = game.self.getUnits.asScala
++      val tile =
++        if (own.nonEmpty) new Tile(own.maxBy(_.getHitPoints).getTilePosition)
++        else new Tile(game.self.getStartLocation)
++      MapIdentifier.clock(tile.center)
++    }
+     mapTileWidth      = game.mapWidth
+     mapTileHeight     = game.mapHeight
+     mapTileArea       = mapTileWidth * mapTileHeight
+@@ -157,10 +176,7 @@ object With {
+     ///////////////////
+     // Configuration //
+     ///////////////////
+-
+-    bwapiData         = new BwapiData
+-    configuration     = new Configuration
+-    logger            = new Logger
++    // Needs With.self (player-named config files).
+     ConfigurationLoader.load()
+ 
+     // Live debugging: prepare combat visualizer IO and launch
+@@ -233,6 +249,7 @@ object With {
+     tasks             = new TaskQueueGlobal
+ 
+     With.logger.debug(f"${game.getGameType.toString.replace("_", " ")} on ${game.mapName} at ${game.mapFileName()} as ${self.fullDescription} with ${(self.allies ++ self.enemies).map(_.fullDescription).mkString(", ")}")
++    ready = true
+   }
+   
+   private def analyzeTerrain(): Unit = {
+-- 
+2.43.0
+
