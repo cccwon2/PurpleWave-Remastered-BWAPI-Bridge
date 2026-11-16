@@ -12,4 +12,5 @@ Copy these into a local PurpleWave checkout on branch `cursor/purplewave-ai-rema
 
 Also add a short remaster pointer to PurpleWave `readme.md` (see Pluto `docs/OPERATOR-PURPLEWAVE-LIVE.md`).
 
-Local PurpleWave commits (unpushed): Aim `311dac45e…`; MatchStart NPE `cde246fb7…` on `cursor/purplewave-ai-remaster-connect-e83e`.
+Local PurpleWave commits (unpushed) on `cursor/purplewave-ai-remaster-connect-e83e`: Aim `311dac45e…`; matchstart 0001 `cde246fb7…`; self-null 0002 `cdcb5d869…`.  
+Pluto companion tip (pushable): `42e6fdd…` clears `GameData.isReplay` each Snapshot.

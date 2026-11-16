@@ -18,25 +18,35 @@ class PurpleWave extends DefaultBWListener {
 
   override def onStart(): Unit = {
     With.frame0ms = 0
-    timeFrameZero(() => {
-      tryCatch(() => {
-        With.onStart()
-        Walls.logInfo = With.configuration.logstd
-        JBWEBWrapper.onStart()
-        With.history.onStart()
-        With.units.onStart()
-        With.grids.creep.update()
-        With.geography.onStart()
-      })})
+    timeFrameZero(() => tryCatch(() => runFullStart()))
+  }
+
+  /** Full bot init after MatchStart (or deferred from onFrame when self was null). */
+  private def runFullStart(): Unit = {
+    With.onStart()
+    Walls.logInfo = With.configuration.logstd
+    JBWEBWrapper.onStart()
+    With.history.onStart()
+    With.units.onStart()
+    With.grids.creep.update()
+    With.geography.onStart()
   }
 
   override def onFrame(): Unit = {
-    // MatchStart → onStart must finish before MatchFrame. If init failed
-    // (or never ran), skip so tryCatch does not NPE on a null With.logger.
+    // If MatchStart onStart failed (e.g. game.self null before Snapshot self
+    // fingerprint was readable), retry init once players are resolvable.
     if (!With.ready) {
-      System.err.println(
-        "[PurpleWave] onFrame skipped: With.ready=false (wait for MatchStart/onStart to finish)")
-      return
+      tryCatch(() => {
+        if (PurpleBWClient.getGame != null && PurpleBWClient.getGame.isInGame) {
+          System.err.println("[PurpleWave] With.ready=false — retrying onStart from onFrame")
+          runFullStart()
+        }
+      })
+      if (!With.ready) {
+        System.err.println(
+          "[PurpleWave] onFrame skipped: With.ready=false (self/players not ready yet)")
+        return
+      }
     }
     timeFrameZero(() => {
       tryCatch(() => {

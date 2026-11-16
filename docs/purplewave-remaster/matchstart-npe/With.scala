@@ -135,32 +135,37 @@ object With {
     game.setLatCom(false)
     game.setLocalSpeed(0)
 
+    // Logger before player resolution so tryCatch / deferred init can report.
+    bwapiData         = new BwapiData
+    configuration     = new Configuration
+    logger            = new Logger
+
     ////////////////
     // Basic data //
     ////////////////
 
     // JBWAPI EventHandler calls onStart on MatchStart before UnitDiscover, so
     // Player.getUnits() is empty here under Remaster Snapshot + JBWAPI.
+    // If isReplay is wrongly set in GameData, Game.self is null — resolve via
+    // Snapshot's resource fingerprint (only local self has minerals filled).
     frame             = 0
     proxy             = new ProxyBWAPI
-    self              = Players.get(game.self)
-    neutral           = Players.get(game.neutral)
-    enemies           = game.enemies.asScala.map(Players.get).toVector
-    friendlies        = With.self +: game.allies.asScala.map(Players.get).toVector
-    // Logger as soon as self/proxy exist so tryCatch can report mapClock / load failures.
-    bwapiData         = new BwapiData
-    configuration     = new Configuration
-    logger            = new Logger
+    val bwapiSelf     = resolveBwapiSelf()
+    self              = Players.get(bwapiSelf)
+    neutral           = Players.get(Option(game.neutral).getOrElse(
+      game.getPlayers.asScala.find(_.isNeutral).orNull))
+    enemies           = resolveEnemies(bwapiSelf)
+    friendlies        = With.self +: resolveAllies(bwapiSelf)
     mapFileName       = game.mapFileName
     mapCleanName      = MapIdentifier(mapFileName)
     // Prefer start location: own units are not in Game.allUnits until after
     // MatchStart → UnitDiscover (Remaster/JBWAPI). Fall back to max HP unit
     // when units already exist (classic BWAPI / late reconnect).
     mapClock          = {
-      val own = game.self.getUnits.asScala
+      val own = bwapiSelf.getUnits.asScala
       val tile =
         if (own.nonEmpty) new Tile(own.maxBy(_.getHitPoints).getTilePosition)
-        else new Tile(game.self.getStartLocation)
+        else new Tile(bwapiSelf.getStartLocation)
       MapIdentifier.clock(tile.center)
     }
     mapTileWidth      = game.mapWidth
@@ -250,6 +255,52 @@ object With {
 
     With.logger.debug(f"${game.getGameType.toString.replace("_", " ")} on ${game.mapName} at ${game.mapFileName()} as ${self.fullDescription} with ${(self.allies ++ self.enemies).map(_.fullDescription).mkString(", ")}")
     ready = true
+  }
+
+  /**
+   * Remaster/JBWAPI: Game.self is null when GameData.isReplay is true. Pluto
+   * Snapshot only writes minerals/gas for the local self slot, so a non-neutral
+   * player with minerals is the controlling player even when self() is null.
+   */
+  private def resolveBwapiSelf(): bwapi.Player = {
+    val direct = game.self
+    if (direct != null) return direct
+    val candidates = game.getPlayers.asScala.filter(p => p != null && !p.isNeutral)
+    val withMinerals = candidates.filter(_.minerals > 0).toVector.sortBy(-_.minerals)
+    val resolved = withMinerals.headOption.orElse(
+      candidates.find(p => p.getType != null && p.getType.isGameType))
+    resolved match {
+      case Some(player) =>
+        if (logger != null) {
+          logger.warn(f"game.self was null (isReplay=${game.isReplay}); using player id=${player.getID} name=${player.getName} minerals=${player.minerals}")
+        } else {
+          System.err.println(f"[PurpleWave] game.self null isReplay=${game.isReplay}; fallback id=${player.getID}")
+        }
+        player
+      case None =>
+        throw new IllegalStateException(
+          f"Cannot resolve local player: game.self=null isReplay=${game.isReplay} players=${candidates.map(_.getID).mkString(",")}")
+    }
+  }
+
+  private def resolveEnemies(bwapiSelf: bwapi.Player): Vector[PlayerInfo] = {
+    val fromGame = Option(game.enemies).map(_.asScala.toVector).getOrElse(Vector.empty)
+    val raw =
+      if (fromGame.nonEmpty) fromGame
+      else game.getPlayers.asScala
+        .filter(p => p != null && !p.equals(bwapiSelf) && !p.isNeutral && bwapiSelf.isEnemy(p))
+        .toVector
+    raw.map(Players.get)
+  }
+
+  private def resolveAllies(bwapiSelf: bwapi.Player): Vector[PlayerInfo] = {
+    val fromGame = Option(game.allies).map(_.asScala.toVector).getOrElse(Vector.empty)
+    val raw =
+      if (fromGame.nonEmpty) fromGame
+      else game.getPlayers.asScala
+        .filter(p => p != null && !p.equals(bwapiSelf) && !p.isNeutral && bwapiSelf.isAlly(p))
+        .toVector
+    raw.map(Players.get)
   }
   
   private def analyzeTerrain(): Unit = {

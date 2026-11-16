@@ -63,6 +63,8 @@ $psi.WorkingDirectory = $GameWorkingDirectory
 $psi.UseShellExecute = $false
 $null = $psi.ArgumentList.Add("-Xms$Xms")
 $null = $psi.ArgumentList.Add("-Xmx$Xmx")
+# Sync JBWAPI like ConnectionProbe — avoids async GameData tears (isReplay/self null).
+$null = $psi.ArgumentList.Add('-Dpurplewave.jbwapi.sync=true')
 if ($DebugPurple) { $null = $psi.ArgumentList.Add('-Dpurpledebug=true') }
 if ($ServerProcessId -gt 0) {
   $null = $psi.ArgumentList.Add("-Dbwapi.serverProcessId=$ServerProcessId")

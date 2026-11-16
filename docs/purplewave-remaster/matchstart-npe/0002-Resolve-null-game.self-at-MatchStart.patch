@@ -1,0 +1,237 @@
+From cdcb5d869a0e3136cfa0d3b1da53c64084b8c677 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 16 Nov 2026 21:17:32 +0000
+Subject: [PATCH] Resolve null game.self at MatchStart; retry init from
+ onFrame.
+
+Players.get NPEd when JBWAPI left Game.self null (isReplay / torn
+GameData). Resolve self via Snapshot mineral fingerprint, null-safe
+Players.get, defer onFrame retry until With.ready, and honor
+-Dpurplewave.jbwapi.sync=true for Remaster (Probe-like sync).
+---
+ src/Lifecycle/Main.scala             |  8 +++-
+ src/Lifecycle/PurpleWave.scala       | 40 ++++++++++------
+ src/Lifecycle/With.scala             | 71 ++++++++++++++++++++++++----
+ src/ProxyBwapi/Players/Players.scala | 21 +++++++-
+ 4 files changed, 113 insertions(+), 27 deletions(-)
+
+diff --git a/src/Lifecycle/Main.scala b/src/Lifecycle/Main.scala
+index be3b19104..8e5ec8507 100644
+--- a/src/Lifecycle/Main.scala
++++ b/src/Lifecycle/Main.scala
+@@ -14,8 +14,13 @@ object Main {
+   private val memoryFree  : Long            = Math.min(Runtime.getRuntime.maxMemory, Runtime.getRuntime.totalMemory)
+   val jvmRuntimeArguments : Vector[String]  = ManagementFactory.getRuntimeMXBean.getInputArguments.asScala.toVector
+   val liveDebugging       : Boolean         = jvmRuntimeArguments.exists(_.contains("purpledebug"))
++  // Remaster/JBWAPI server: prefer sync (matches ConnectionProbe). Async unsafe
++  // can tear GameData bools (isReplay) and leave Game.self null at MatchStart.
++  val forceSync           : Boolean         =
++    jvmRuntimeArguments.exists(_.contains("purplewave.jbwapi.sync=true")) ||
++      Option(System.getProperty("purplewave.jbwapi.sync")).exists(v => v == "true" || v == "1")
+   val framesBufferable    : Int             = ((memoryFree - botRequiredDataSizeBytes) / JBWAPIClientDataSizeBytes).toInt
+-  val useFrameBuffer      : Boolean         = ! liveDebugging
++  val useFrameBuffer      : Boolean         = ! liveDebugging && ! forceSync
+   val framesToBuffer      : Int             = ?(useFrameBuffer, Maff.clamp(framesBufferable, 1, 10), 0)
+ 
+   val jbwapiConfiguration: BWClientConfiguration = new BWClientConfiguration()
+@@ -28,6 +33,7 @@ object Main {
+ 
+   def main(args: Array[String]): Unit = {
+     System.out.println(f"PurpleWave Main.main() invoked ${System.currentTimeMillis() - ManagementFactory.getRuntimeMXBean.getStartTime}ms after VM start.")
++    System.out.println(f"JBWAPI async=${useFrameBuffer} forceSync=$forceSync framesToBuffer=$framesToBuffer")
+     PurpleBWClient.startGame(jbwapiConfiguration)
+   }
+ }
+diff --git a/src/Lifecycle/PurpleWave.scala b/src/Lifecycle/PurpleWave.scala
+index 3b9168c97..04e94c626 100644
+--- a/src/Lifecycle/PurpleWave.scala
++++ b/src/Lifecycle/PurpleWave.scala
+@@ -18,25 +18,35 @@ class PurpleWave extends DefaultBWListener {
+ 
+   override def onStart(): Unit = {
+     With.frame0ms = 0
+-    timeFrameZero(() => {
+-      tryCatch(() => {
+-        With.onStart()
+-        Walls.logInfo = With.configuration.logstd
+-        JBWEBWrapper.onStart()
+-        With.history.onStart()
+-        With.units.onStart()
+-        With.grids.creep.update()
+-        With.geography.onStart()
+-      })})
++    timeFrameZero(() => tryCatch(() => runFullStart()))
++  }
++
++  /** Full bot init after MatchStart (or deferred from onFrame when self was null). */
++  private def runFullStart(): Unit = {
++    With.onStart()
++    Walls.logInfo = With.configuration.logstd
++    JBWEBWrapper.onStart()
++    With.history.onStart()
++    With.units.onStart()
++    With.grids.creep.update()
++    With.geography.onStart()
+   }
+ 
+   override def onFrame(): Unit = {
+-    // MatchStart → onStart must finish before MatchFrame. If init failed
+-    // (or never ran), skip so tryCatch does not NPE on a null With.logger.
++    // If MatchStart onStart failed (e.g. game.self null before Snapshot self
++    // fingerprint was readable), retry init once players are resolvable.
+     if (!With.ready) {
+-      System.err.println(
+-        "[PurpleWave] onFrame skipped: With.ready=false (wait for MatchStart/onStart to finish)")
+-      return
++      tryCatch(() => {
++        if (PurpleBWClient.getGame != null && PurpleBWClient.getGame.isInGame) {
++          System.err.println("[PurpleWave] With.ready=false — retrying onStart from onFrame")
++          runFullStart()
++        }
++      })
++      if (!With.ready) {
++        System.err.println(
++          "[PurpleWave] onFrame skipped: With.ready=false (self/players not ready yet)")
++        return
++      }
+     }
+     timeFrameZero(() => {
+       tryCatch(() => {
+diff --git a/src/Lifecycle/With.scala b/src/Lifecycle/With.scala
+index 2efb7a407..ff6f3f68f 100644
+--- a/src/Lifecycle/With.scala
++++ b/src/Lifecycle/With.scala
+@@ -135,32 +135,37 @@ object With {
+     game.setLatCom(false)
+     game.setLocalSpeed(0)
+ 
++    // Logger before player resolution so tryCatch / deferred init can report.
++    bwapiData         = new BwapiData
++    configuration     = new Configuration
++    logger            = new Logger
++
+     ////////////////
+     // Basic data //
+     ////////////////
+ 
+     // JBWAPI EventHandler calls onStart on MatchStart before UnitDiscover, so
+     // Player.getUnits() is empty here under Remaster Snapshot + JBWAPI.
++    // If isReplay is wrongly set in GameData, Game.self is null — resolve via
++    // Snapshot's resource fingerprint (only local self has minerals filled).
+     frame             = 0
+     proxy             = new ProxyBWAPI
+-    self              = Players.get(game.self)
+-    neutral           = Players.get(game.neutral)
+-    enemies           = game.enemies.asScala.map(Players.get).toVector
+-    friendlies        = With.self +: game.allies.asScala.map(Players.get).toVector
+-    // Logger as soon as self/proxy exist so tryCatch can report mapClock / load failures.
+-    bwapiData         = new BwapiData
+-    configuration     = new Configuration
+-    logger            = new Logger
++    val bwapiSelf     = resolveBwapiSelf()
++    self              = Players.get(bwapiSelf)
++    neutral           = Players.get(Option(game.neutral).getOrElse(
++      game.getPlayers.asScala.find(_.isNeutral).orNull))
++    enemies           = resolveEnemies(bwapiSelf)
++    friendlies        = With.self +: resolveAllies(bwapiSelf)
+     mapFileName       = game.mapFileName
+     mapCleanName      = MapIdentifier(mapFileName)
+     // Prefer start location: own units are not in Game.allUnits until after
+     // MatchStart → UnitDiscover (Remaster/JBWAPI). Fall back to max HP unit
+     // when units already exist (classic BWAPI / late reconnect).
+     mapClock          = {
+-      val own = game.self.getUnits.asScala
++      val own = bwapiSelf.getUnits.asScala
+       val tile =
+         if (own.nonEmpty) new Tile(own.maxBy(_.getHitPoints).getTilePosition)
+-        else new Tile(game.self.getStartLocation)
++        else new Tile(bwapiSelf.getStartLocation)
+       MapIdentifier.clock(tile.center)
+     }
+     mapTileWidth      = game.mapWidth
+@@ -251,6 +256,52 @@ object With {
+     With.logger.debug(f"${game.getGameType.toString.replace("_", " ")} on ${game.mapName} at ${game.mapFileName()} as ${self.fullDescription} with ${(self.allies ++ self.enemies).map(_.fullDescription).mkString(", ")}")
+     ready = true
+   }
++
++  /**
++   * Remaster/JBWAPI: Game.self is null when GameData.isReplay is true. Pluto
++   * Snapshot only writes minerals/gas for the local self slot, so a non-neutral
++   * player with minerals is the controlling player even when self() is null.
++   */
++  private def resolveBwapiSelf(): bwapi.Player = {
++    val direct = game.self
++    if (direct != null) return direct
++    val candidates = game.getPlayers.asScala.filter(p => p != null && !p.isNeutral)
++    val withMinerals = candidates.filter(_.minerals > 0).toVector.sortBy(-_.minerals)
++    val resolved = withMinerals.headOption.orElse(
++      candidates.find(p => p.getType != null && p.getType.isGameType))
++    resolved match {
++      case Some(player) =>
++        if (logger != null) {
++          logger.warn(f"game.self was null (isReplay=${game.isReplay}); using player id=${player.getID} name=${player.getName} minerals=${player.minerals}")
++        } else {
++          System.err.println(f"[PurpleWave] game.self null isReplay=${game.isReplay}; fallback id=${player.getID}")
++        }
++        player
++      case None =>
++        throw new IllegalStateException(
++          f"Cannot resolve local player: game.self=null isReplay=${game.isReplay} players=${candidates.map(_.getID).mkString(",")}")
++    }
++  }
++
++  private def resolveEnemies(bwapiSelf: bwapi.Player): Vector[PlayerInfo] = {
++    val fromGame = Option(game.enemies).map(_.asScala.toVector).getOrElse(Vector.empty)
++    val raw =
++      if (fromGame.nonEmpty) fromGame
++      else game.getPlayers.asScala
++        .filter(p => p != null && !p.equals(bwapiSelf) && !p.isNeutral && bwapiSelf.isEnemy(p))
++        .toVector
++    raw.map(Players.get)
++  }
++
++  private def resolveAllies(bwapiSelf: bwapi.Player): Vector[PlayerInfo] = {
++    val fromGame = Option(game.allies).map(_.asScala.toVector).getOrElse(Vector.empty)
++    val raw =
++      if (fromGame.nonEmpty) fromGame
++      else game.getPlayers.asScala
++        .filter(p => p != null && !p.equals(bwapiSelf) && !p.isNeutral && bwapiSelf.isAlly(p))
++        .toVector
++    raw.map(Players.get)
++  }
+   
+   private def analyzeTerrain(): Unit = {
+     try {
+diff --git a/src/ProxyBwapi/Players/Players.scala b/src/ProxyBwapi/Players/Players.scala
+index 1b54870b2..2cbb82e0d 100644
+--- a/src/ProxyBwapi/Players/Players.scala
++++ b/src/ProxyBwapi/Players/Players.scala
+@@ -5,5 +5,24 @@ import bwapi.Player
+ 
+ object Players {
+   def all: Iterable[PlayerInfo] = With.proxy.players
+-  def get(player: Player): PlayerInfo = With.proxy.playersById(player.getID)
++
++  def get(player: Player): PlayerInfo = {
++    if (player == null) {
++      throw new IllegalArgumentException(
++        "Players.get(null): bwapi Player missing (game.self/neutral null — often isReplay=true or Snapshot self unset)")
++    }
++    if (With.proxy == null) {
++      throw new IllegalStateException("Players.get: With.proxy not initialized")
++    }
++    val id = player.getID
++    val byId = With.proxy.playersById
++    if (id < 0 || id >= byId.length) {
++      throw new IllegalStateException(s"Players.get: id=$id out of range [0,${byId.length})")
++    }
++    val info = byId(id)
++    if (info == null) {
++      throw new IllegalStateException(s"Players.get: no PlayerInfo for id=$id (playersById hole)")
++    }
++    info
++  }
+ }
+-- 
+2.43.0
+

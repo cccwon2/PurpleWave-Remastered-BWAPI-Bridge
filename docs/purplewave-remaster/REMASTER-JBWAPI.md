@@ -50,11 +50,14 @@ Gameless unit tests (optional, long): `mvn test` — not a live SCR claim.
 5. Start / join a match in SCR.
 6. Confirm bridge log stages `jbwapi_client_connected`, `jbwapi_client_commands_apply`, `jbwapi_unit_commands_result` with `packets_submitted` > 0 when the bot acts.
 
-## MatchStart vs own units (Live C NPE)
+## MatchStart Live C NPEs
 
-JBWAPI processes **MatchStart → onStart** before **UnitDiscover**. Under Pluto Snapshot that means `game.self.getUnits()` is empty during `With.onStart`. Upstream PurpleWave used `maxBy` on that list, then `tryCatch` NPEd on a null `With.logger` (stack at `PurpleWave.scala:100`).
+Two stacked failures (apply **both** patches under `matchstart-npe/` + Pluto tip with `isReplay=false`):
 
-Apply `docs/purplewave-remaster/matchstart-npe/` before Live C retest. You do **not** need to delay the client until after MatchStart — you need the hardened init that uses start location + `With.ready` gating. MatchFrame before a successful onStart safely no-ops.
+1. **Empty units / tryCatch:** MatchStart runs before UnitDiscover → empty `getUnits` → later masked by null-logger tryCatch.
+2. **Null `game.self` / `Players.get`:** JBWAPI nulls `Game.self` when `GameData.isReplay` is true. Snapshot must clear `isReplay` every frame; PurpleWave also falls back to the Snapshot mineral fingerprint and **retries onStart from onFrame** until `With.ready`.
+
+`Run-Remaster.ps1` forces `-Dpurplewave.jbwapi.sync=true` (same as Probe) to avoid async GameData tears.
 
 ## Approximations / gaps
 
