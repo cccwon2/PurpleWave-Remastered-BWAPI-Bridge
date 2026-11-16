@@ -1,0 +1,51 @@
+From 311dac45ecd0e0c1747bf56b39945905c54020f8 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 16 Nov 2026 20:54:47 +0000
+Subject: [PATCH] Restore Aim combat Technique removed by tip 88c1056aa.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Combat.scala still references Techniques.Aim; Fight.scala incorrectly called
+Aim as an Action. Restore the Technique (and allow Fight→Aim transition) and
+drop the invalid Aim(unit) call so mvn package compiles again.
+---
+ src/Micro/Actions/Combat/Decisionmaking/Techniques.scala | 4 +++-
+ src/Micro/Actions/Combat/Fight.scala                     | 1 -
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/Micro/Actions/Combat/Decisionmaking/Techniques.scala b/src/Micro/Actions/Combat/Decisionmaking/Techniques.scala
+index b681ebd40..e76d8561a 100644
+--- a/src/Micro/Actions/Combat/Decisionmaking/Techniques.scala
++++ b/src/Micro/Actions/Combat/Decisionmaking/Techniques.scala
+@@ -6,6 +6,7 @@ object Techniques {
+   abstract class Technique(val transitions: Technique*) extends SimpleString {
+     def canTransition(other: Technique): Boolean = transitions.contains(other)
+   }
++  object Aim        extends Technique // Stand in place and shoot
+   object Dodge      extends Technique // Heed pushes
+   object Excuse     extends Technique(Dodge) // Let other units shove through us
+   object Walk       extends Technique(Dodge, Excuse) // Just go on our merry way
+@@ -14,5 +15,6 @@ object Techniques {
+   object Scavenge   extends Technique(Dodge, Excuse) // Eat around the edge of the fight
+   object Fallback   extends Technique(Dodge) // Get out of fight while landing shots
+   object Flee       extends Technique(Dodge, Abuse, Fallback) // Get out of fight
+-  object Fight      extends Technique(Dodge, Abuse, SuperKite, Excuse, Flee, Scavenge) // Pick fight ASAP
++  // Aim listed so transition(Aim, !canMove) from Combat can fire (was missing historically).
++  object Fight      extends Technique(Dodge, Abuse, SuperKite, Excuse, Flee, Scavenge, Aim) // Pick fight ASAP
+ }
+diff --git a/src/Micro/Actions/Combat/Fight.scala b/src/Micro/Actions/Combat/Fight.scala
+index 8dad507d3..de6aa976e 100644
+--- a/src/Micro/Actions/Combat/Fight.scala
++++ b/src/Micro/Actions/Combat/Fight.scala
+@@ -36,7 +36,6 @@ object Fight extends Action {
+     Recharge(unit)
+     Bust(unit)
+     Stealth(unit)
+-    Aim(unit)
+     unit.agent.combat.perform(unit)
+     OccupyBunker(unit)
+   }
+-- 
+2.43.0
+
