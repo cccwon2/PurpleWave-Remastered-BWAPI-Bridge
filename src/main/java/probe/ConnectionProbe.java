@@ -13,7 +13,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -28,6 +30,15 @@ public final class ConnectionProbe extends DefaultBWListener {
     public static final int EXIT_WORKDIR = 5;
     public static final int EXIT_TIMEOUT = 6;
     public static final int EXIT_FAILED = 7;
+    public static final int EXIT_PIN_MISMATCH = 8;
+
+    public static final String ERROR_MATCH_START_WAIT_EXCEEDED = "MATCH_START_WAIT_EXCEEDED";
+    public static final String ERROR_WINDOWS_API_UNAVAILABLE = "WINDOWS_API_UNAVAILABLE";
+    public static final String ERROR_NO_BRIDGE_OR_WAITING = "NO_BRIDGE_OR_WAITING";
+    public static final String ERROR_OVERALL_RUN_TIMEOUT = "OVERALL_RUN_TIMEOUT";
+    public static final String ERROR_JBWAPI_PIN_MISMATCH = "JBWAPI_PIN_MISMATCH";
+
+    private static final long FIELD_ERROR_LOG_INTERVAL_MS = 5_000L;
 
     private final ProbeConfig config;
     private final JsonlLogger logger;
@@ -36,6 +47,7 @@ public final class ConnectionProbe extends DefaultBWListener {
     private final AtomicBoolean timedOut = new AtomicBoolean(false);
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
     private final AtomicReference<ProbeState> state = new AtomicReference<ProbeState>(ProbeState.PROCESS_STARTED);
+    private final ConcurrentHashMap<String, AtomicLong> lastFieldErrorLogMs = new ConcurrentHashMap<String, AtomicLong>();
     private volatile long lastStatusEmitMs = 0L;
     private volatile Thread clientThread;
 
@@ -50,6 +62,10 @@ public final class ConnectionProbe extends DefaultBWListener {
     }
 
     static int run(String[] args) {
+        return run(args, JbwapiPin.defaultRepoRoot());
+    }
+
+    static int run(String[] args, Path repoRootForPinCheck) {
         ProbeConfig config;
         try {
             config = ProbeConfig.parse(args);
@@ -62,6 +78,11 @@ public final class ConnectionProbe extends DefaultBWListener {
             return EXIT_CONFIG;
         }
 
+        int pinCode = verifyJbwapiPin(repoRootForPinCheck);
+        if (pinCode != EXIT_OK) {
+            return pinCode;
+        }
+
         if (config.getWorkingDirectory() != null) {
             Path workdir = config.getWorkingDirectory();
             if (!Files.isDirectory(workdir)) {
@@ -71,11 +92,11 @@ public final class ConnectionProbe extends DefaultBWListener {
             System.setProperty("user.dir", workdir.toAbsolutePath().toString());
         }
 
-        Path logFile = config.getLogDirectory().resolve("connection-probe.jsonl");
+        Path logFile = config.resolveJsonlPath();
         JsonlLogger logger;
         try {
             Files.createDirectories(config.getLogDirectory());
-            logger = new JsonlLogger(logFile, System.out);
+            logger = new JsonlLogger(logFile, System.out, config.getRunId());
         } catch (IOException ex) {
             System.err.println("Failed to create log directory/file: " + ex.getMessage());
             return EXIT_LOG_DIR;
@@ -93,16 +114,47 @@ public final class ConnectionProbe extends DefaultBWListener {
         }
     }
 
+    static int verifyJbwapiPin(Path repoRoot) {
+        if (repoRoot == null) {
+            return EXIT_OK;
+        }
+        // Allow tests to skip when submodule path is absent.
+        Path jbwapi = repoRoot.resolve("3rdparty").resolve("jbwapi");
+        if (!Files.isDirectory(jbwapi)) {
+            System.err.println("WARN: 3rdparty/jbwapi missing under " + repoRoot + "; skipping pin check");
+            return EXIT_OK;
+        }
+        try {
+            String sha = JbwapiPin.readCheckedOutSha(repoRoot);
+            if (sha == null) {
+                System.err.println("WARN: could not read JBWAPI submodule SHA; continuing");
+                return EXIT_OK;
+            }
+            if (!JbwapiPin.matchesExpected(sha)) {
+                System.err.println("JBWAPI pin mismatch: expected " + JbwapiPin.EXPECTED_SHA + " but found " + sha);
+                return EXIT_PIN_MISMATCH;
+            }
+        } catch (Exception ex) {
+            System.err.println("WARN: JBWAPI pin check failed: " + ex.getMessage());
+        }
+        return EXIT_OK;
+    }
+
     private int execute() {
         clientThread = Thread.currentThread();
         printEnvironment();
-        transition(ProbeState.PROCESS_STARTED, "INFO", "Connection probe process started");
+        transition(ProbeState.PROCESS_STARTED, "INFO",
+                "Connection probe process started runId=" + config.getRunId()
+                        + " jsonl=" + config.resolveJsonlPath());
         transition(ProbeState.WAITING_FOR_BRIDGE, "INFO",
-                "Waiting for BWAPI shared-memory bridge (Local\\\\bwapi_shared_memory_game_list). "
-                        + "Public JBWAPI listener API has no separate CONNECTED callback; "
-                        + "next observable event is MATCH_STARTED via onStart().");
+                "Match-start wait began (NOT a verified IPC-connect wait). "
+                        + "Public JBWAPI listener API has no CONNECTED callback. "
+                        + "Looking for Local\\\\bwapi_shared_memory_game_list then onStart()/MATCH_STARTED. "
+                        + "matchStartWaitMs=" + config.getMatchStartWaitMs()
+                        + " overallRunTimeoutMs=" + config.getOverallRunTimeoutMs());
 
-        startConnectWatchdog();
+        startMatchStartWatchdog();
+        startOverallRunWatchdog();
 
         BWClientConfiguration configuration = new BWClientConfiguration()
                 .withAutoContinue(false)
@@ -120,20 +172,42 @@ public final class ConnectionProbe extends DefaultBWListener {
             return EXIT_OK;
         } catch (Throwable t) {
             if (timedOut.get() || isInterrupt(t)) {
-                transition(ProbeState.FAILED, "ERROR", "Connect timeout or interrupt: " + t.getClass().getSimpleName()
-                        + ": " + String.valueOf(t.getMessage()));
+                String code = matchActive.get() ? ERROR_OVERALL_RUN_TIMEOUT : ERROR_MATCH_START_WAIT_EXCEEDED;
+                Map<String, Object> fields = new LinkedHashMap<String, Object>();
+                fields.put("errorCode", code);
+                logger.log("ERROR", ProbeState.FAILED, fields,
+                        "Timeout/interrupt: " + t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage()));
+                state.set(ProbeState.FAILED);
                 return EXIT_TIMEOUT;
             }
+            String errorCode = classifyFailure(t);
             Map<String, Object> fields = new LinkedHashMap<String, Object>();
-            fields.put("errorCode", t.getClass().getName());
-            logger.log("ERROR", ProbeState.FAILED, fields, "Unhandled failure: " + t.getMessage());
+            fields.put("errorCode", errorCode);
+            logger.log("ERROR", ProbeState.FAILED, fields,
+                    "Unhandled failure (" + errorCode + "): " + t.getClass().getName() + ": " + t.getMessage());
             state.set(ProbeState.FAILED);
             return EXIT_FAILED;
         }
     }
 
-    private void startConnectWatchdog() {
-        final long timeoutMs = config.getConnectTimeoutMs();
+    static String classifyFailure(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            String name = cur.getClass().getName();
+            String msg = String.valueOf(cur.getMessage()).toLowerCase();
+            if (cur instanceof UnsatisfiedLinkError
+                    || name.contains("UnsatisfiedLinkError")
+                    || msg.contains("kernel32")
+                    || msg.contains("libkernel32")) {
+                return ERROR_WINDOWS_API_UNAVAILABLE;
+            }
+            cur = cur.getCause();
+        }
+        return ERROR_NO_BRIDGE_OR_WAITING;
+    }
+
+    private void startMatchStartWatchdog() {
+        final long timeoutMs = config.getMatchStartWaitMs();
         Thread watchdog = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -147,12 +221,52 @@ public final class ConnectionProbe extends DefaultBWListener {
                 }
                 timedOut.set(true);
                 Map<String, Object> fields = new LinkedHashMap<String, Object>();
-                fields.put("errorCode", "CONNECT_TIMEOUT");
+                fields.put("errorCode", ERROR_MATCH_START_WAIT_EXCEEDED);
                 logger.log("ERROR", ProbeState.FAILED, fields,
-                        "Connect timeout after " + timeoutMs + "ms while still waiting for match start. "
-                                + "JBWAPI BWClient has no public stop(); exiting probe process only.");
+                        "Match-start wait exceeded after " + timeoutMs + "ms (still no onStart). "
+                                + "This is not proof of IPC connect failure vs absent bridge — only that MATCH_STARTED "
+                                + "was not observed. JBWAPI BWClient has no public stop(); exiting probe only.");
                 state.set(ProbeState.FAILED);
-                // Interrupt the blocking reconnect/startGame loop, then hard-exit if needed.
+                Thread target = clientThread;
+                if (target != null) {
+                    target.interrupt();
+                }
+                try {
+                    Thread.sleep(1500L);
+                } catch (InterruptedException ignored) {
+                    // ignore
+                }
+                if (!shuttingDown.get() && !matchActive.get()) {
+                    System.exit(EXIT_TIMEOUT);
+                }
+            }
+        }, "probe-match-start-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+    }
+
+    private void startOverallRunWatchdog() {
+        final long timeoutMs = config.getOverallRunTimeoutMs();
+        if (timeoutMs <= 0) {
+            return;
+        }
+        Thread watchdog = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Thread.sleep(timeoutMs);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (shuttingDown.get()) {
+                    return;
+                }
+                timedOut.set(true);
+                Map<String, Object> fields = new LinkedHashMap<String, Object>();
+                fields.put("errorCode", ERROR_OVERALL_RUN_TIMEOUT);
+                logger.log("ERROR", ProbeState.FAILED, fields,
+                        "Overall run timeout after " + timeoutMs + "ms; stopping probe process only.");
+                state.set(ProbeState.FAILED);
                 Thread target = clientThread;
                 if (target != null) {
                     target.interrupt();
@@ -166,7 +280,7 @@ public final class ConnectionProbe extends DefaultBWListener {
                     System.exit(EXIT_TIMEOUT);
                 }
             }
-        }, "probe-connect-watchdog");
+        }, "probe-overall-run-watchdog");
         watchdog.setDaemon(true);
         watchdog.start();
     }
@@ -174,21 +288,17 @@ public final class ConnectionProbe extends DefaultBWListener {
     private void printEnvironment() {
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
         fields.put("errorCode", null);
-        String jvmName = System.getProperty("java.vm.name");
-        String javaVersion = System.getProperty("java.version");
-        String javaHome = System.getProperty("java.home");
-        String osName = System.getProperty("os.name");
-        String osArch = System.getProperty("os.arch");
-        String dataModel = System.getProperty("sun.arch.data.model");
-        String message = "env javaVersion=" + javaVersion
-                + " javaHome=" + javaHome
-                + " vm=" + jvmName
-                + " os=" + osName + "/" + osArch
-                + " dataModel=" + dataModel
-                + " jbwapiCommit=d6003b0b3a6a27944c979fd8dbc6ec8e3c2c753f"
-                + " jbwapiSupportedBwapiClientVersion=10003"
+        String message = "env javaVersion=" + System.getProperty("java.version")
+                + " javaHome=" + System.getProperty("java.home")
+                + " vm=" + System.getProperty("java.vm.name")
+                + " os=" + System.getProperty("os.name") + "/" + System.getProperty("os.arch")
+                + " dataModel=" + System.getProperty("sun.arch.data.model")
+                + " jbwapiCommit=" + JbwapiPin.EXPECTED_SHA
+                + " jbwapiSupportedBwapiClientVersion=" + JbwapiPin.SUPPORTED_BWAPI_CLIENT_VERSION
+                + " jnaAlignedToPurpleWave=5.1.0"
                 + " cwd=" + Paths.get("").toAbsolutePath()
                 + " runtimeMx=" + ManagementFactory.getRuntimeMXBean().getName()
+                + " runId=" + config.getRunId()
                 + " note=supplyUsed/supplyTotal are BWAPI internal units (display = internal/2)";
         logger.log("INFO", ProbeState.PROCESS_STARTED, fields, message);
     }
@@ -232,74 +342,124 @@ public final class ConnectionProbe extends DefaultBWListener {
     private Map<String, Object> snapshot(Game game) {
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
         if (game == null) {
-            fields.put("frame", null);
-            fields.put("playerId", null);
-            fields.put("race", null);
-            fields.put("minerals", null);
-            fields.put("gas", null);
-            fields.put("supplyUsed", null);
-            fields.put("supplyTotal", null);
-            fields.put("selfUnitCount", null);
+            putNull(fields, "frame");
+            putNull(fields, "playerId");
+            putNull(fields, "race");
+            putNull(fields, "minerals");
+            putNull(fields, "gas");
+            putNull(fields, "supplyUsed");
+            putNull(fields, "supplyTotal");
+            putNull(fields, "selfUnitCount");
             return fields;
         }
-        try {
-            fields.put("frame", game.getFrameCount());
-        } catch (Throwable t) {
-            fields.put("frame", null);
-        }
+        readField(fields, "frame", new FieldReader() {
+            @Override
+            public Object read() {
+                return game.getFrameCount();
+            }
+        });
         Player self = null;
         try {
             self = game.self();
         } catch (Throwable t) {
+            logFieldFailure("self", t);
             self = null;
         }
         if (self == null) {
-            fields.put("playerId", null);
-            fields.put("race", null);
-            fields.put("minerals", null);
-            fields.put("gas", null);
-            fields.put("supplyUsed", null);
-            fields.put("supplyTotal", null);
-            fields.put("selfUnitCount", null);
+            putNull(fields, "playerId");
+            putNull(fields, "race");
+            putNull(fields, "minerals");
+            putNull(fields, "gas");
+            putNull(fields, "supplyUsed");
+            putNull(fields, "supplyTotal");
+            putNull(fields, "selfUnitCount");
             return fields;
         }
-        try {
-            fields.put("playerId", self.getID());
-        } catch (Throwable t) {
-            fields.put("playerId", null);
-        }
-        try {
-            fields.put("race", self.getRace() == null ? null : self.getRace().toString());
-        } catch (Throwable t) {
-            fields.put("race", null);
-        }
-        try {
-            fields.put("minerals", self.minerals());
-        } catch (Throwable t) {
-            fields.put("minerals", null);
-        }
-        try {
-            fields.put("gas", self.gas());
-        } catch (Throwable t) {
-            fields.put("gas", null);
-        }
-        try {
-            // BWAPI internal supply units; in-game display supply is typically internal/2.
-            fields.put("supplyUsed", self.supplyUsed());
-        } catch (Throwable t) {
-            fields.put("supplyUsed", null);
-        }
-        try {
-            fields.put("supplyTotal", self.supplyTotal());
-        } catch (Throwable t) {
-            fields.put("supplyTotal", null);
-        }
-        try {
-            fields.put("selfUnitCount", self.getUnits() == null ? null : self.getUnits().size());
-        } catch (Throwable t) {
-            fields.put("selfUnitCount", null);
-        }
+        final Player player = self;
+        readField(fields, "playerId", new FieldReader() {
+            @Override
+            public Object read() {
+                return player.getID();
+            }
+        });
+        readField(fields, "race", new FieldReader() {
+            @Override
+            public Object read() {
+                return player.getRace() == null ? null : player.getRace().toString();
+            }
+        });
+        readField(fields, "minerals", new FieldReader() {
+            @Override
+            public Object read() {
+                return player.minerals();
+            }
+        });
+        readField(fields, "gas", new FieldReader() {
+            @Override
+            public Object read() {
+                return player.gas();
+            }
+        });
+        readField(fields, "supplyUsed", new FieldReader() {
+            @Override
+            public Object read() {
+                return player.supplyUsed();
+            }
+        });
+        readField(fields, "supplyTotal", new FieldReader() {
+            @Override
+            public Object read() {
+                return player.supplyTotal();
+            }
+        });
+        readField(fields, "selfUnitCount", new FieldReader() {
+            @Override
+            public Object read() {
+                return player.getUnits() == null ? null : Integer.valueOf(player.getUnits().size());
+            }
+        });
         return fields;
+    }
+
+    private interface FieldReader {
+        Object read() throws Exception;
+    }
+
+    private void readField(Map<String, Object> fields, String name, FieldReader reader) {
+        try {
+            fields.put(name, reader.read());
+        } catch (Throwable t) {
+            fields.put(name, null);
+            logFieldFailure(name, t);
+        }
+    }
+
+    private void putNull(Map<String, Object> fields, String name) {
+        fields.put(name, null);
+    }
+
+    private void logFieldFailure(String fieldName, Throwable t) {
+        long now = System.currentTimeMillis();
+        AtomicLong last = lastFieldErrorLogMs.get(fieldName);
+        if (last == null) {
+            last = new AtomicLong(0L);
+            AtomicLong prev = lastFieldErrorLogMs.putIfAbsent(fieldName, last);
+            if (prev != null) {
+                last = prev;
+            }
+        }
+        long previous = last.get();
+        if (now - previous < FIELD_ERROR_LOG_INTERVAL_MS) {
+            return;
+        }
+        if (!last.compareAndSet(previous, now)) {
+            return;
+        }
+        Map<String, Object> fields = new LinkedHashMap<String, Object>();
+        fields.put("errorCode", "FIELD_READ_FAILED:" + fieldName);
+        logger.log("WARN", state.get(), fields,
+                "Field read failed for '" + fieldName + "': " + t.getClass().getSimpleName()
+                        + ": " + String.valueOf(t.getMessage()));
     }
 
     private void transition(ProbeState next, String level, String message) {

@@ -66,7 +66,8 @@ Per-item verdict: **confirmed** / **mismatch** / **unknown**.
 | Public `stop()` / graceful disconnect API | **confirmed absent** | No public stop method on `BWClient`. `Client.disconnect()` is package-private and only used internally on pipe/version failure |
 | Timeout support inside JBWAPI | **confirmed absent** | `Client.reconnect()` loops forever: `while (!connect()) sleep(1000)` |
 
-Implication: connect timeout must be supervised externally (probe watchdog + PowerShell `Stop-Process` on probe PID only).
+Implication: match-start wait must be supervised externally (probe watchdog + PowerShell stop of **this script’s probe PID only**).  
+Public API cannot observe IPC connect separately — supervisor wait is a **match-start wait** (`MATCH_STARTED` / `onStart`), not a pure connect wait.
 
 ### 4.2 Listener registration
 
@@ -129,8 +130,10 @@ Commands / speed changes: **not used** by the probe (out of scope / disallowed).
 | JBWAPI IPC uses Windows `Kernel32.OpenFileMapping` + `RandomAccessFile` on named pipes via JNA | `Client.java` | **confirmed** — Windows session APIs |
 | “Game is x86 ⇒ Java must be x86 for this combo” | — | **not asserted here** — docs disagree; needs Windows Remastered experiment |
 | “64-bit Java + this JBWAPI commit works against Remastered bridge” | — | **unknown** — not tested |
-| JNA versions | PurpleWave pom 5.1.0; JBWAPI pom 5.6.0 | **mismatch between projects**; probe follows **JBWAPI 5.6.0** because it compiles JBWAPI sources |
+| JNA versions | PurpleWave pom **5.1.0**; JBWAPI pom @ d6003b0 declares **5.6.0** | **mismatch between upstream projects**; probe **aligned to PurpleWave 5.1.0** for baseline build/test reproducibility (JBWAPI commit unchanged). 5.6.0-vs-5.1.0 behavioral delta on Remastered: **unverified** |
 | Works on Linux cloud VM | — | **confirmed no** for real IPC (no Kernel32 mappings) |
+| Safe argv (spaces/Korean) | PS7 `ProcessStartInfo.ArgumentList.Add` | **confirmed** in harden tests; `Start-Process -ArgumentList` array on PS7 **splits** spaces (do not use) |
+| Supervisor match-start vs overall | `scripts/ProbeSupervisor.ps1` + `Run-Probe.ps1` | **confirmed**: pre-match wait stops applying after runId-scoped `MATCH_STARTED`; overall limit only if `OverallRunTimeoutMs` > 0 |
 
 ## 5. Bridge-side comparison
 

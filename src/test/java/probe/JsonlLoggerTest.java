@@ -17,13 +17,13 @@ import static org.junit.Assert.assertTrue;
 public class JsonlLoggerTest {
 
     @Test
-    public void writesRequiredFieldsWithNulls() throws Exception {
+    public void writesRequiredFieldsWithRunIdAndNulls() throws Exception {
         Path dir = Files.createTempDirectory("probe-jsonl");
         Path file = dir.resolve("test.jsonl");
         ByteArrayOutputStream mirrorBytes = new ByteArrayOutputStream();
         PrintStream mirror = new PrintStream(mirrorBytes, true, "UTF-8");
 
-        JsonlLogger logger = new JsonlLogger(file, mirror);
+        JsonlLogger logger = new JsonlLogger(file, mirror, "run-42");
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
         fields.put("frame", 12);
         fields.put("playerId", 0);
@@ -41,6 +41,7 @@ public class JsonlLoggerTest {
         assertEquals(1, lines.size());
         String line = lines.get(0);
         assertTrue(line.contains("\"event\":\"MATCH_STARTED\""));
+        assertTrue(line.contains("\"runId\":\"run-42\""));
         assertTrue(line.contains("\"frame\":12"));
         assertTrue(line.contains("\"errorCode\":null"));
         assertTrue(line.contains("\"message\":\"hello \\\"world\\\"\""));

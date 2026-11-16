@@ -24,32 +24,47 @@ public class ConnectionProbeOfflineTest {
         int code = ConnectionProbe.run(new String[]{
                 "--workdir", missing.toString(),
                 "--log-dir", logDir.toString(),
-                "--connect-timeout-ms", "1000"
-        });
+                "--connect-timeout-ms", "1000",
+                "--run-id", "offline-wd"
+        }, Paths.get("no-such-repo-root-for-pin-skip"));
         assertEquals(ConnectionProbe.EXIT_WORKDIR, code);
     }
 
     @Test
     public void helpReturnsUsageExitCode() {
-        int code = ConnectionProbe.run(new String[]{"--help"});
+        int code = ConnectionProbe.run(new String[]{"--help"}, Paths.get("missing-root"));
         assertEquals(ConnectionProbe.EXIT_USAGE, code);
     }
 
     @Test
     public void badConfigReturnsExitCode() {
-        int code = ConnectionProbe.run(new String[]{"--connect-timeout-ms", "1"});
+        int code = ConnectionProbe.run(new String[]{"--connect-timeout-ms", "1"}, Paths.get("missing-root"));
         assertEquals(ConnectionProbe.EXIT_CONFIG, code);
     }
 
     @Test
     public void logDirCreateFailureReturnsExitCode() throws Exception {
         Path blocker = Files.createTempFile("probe-log-blocker", ".tmp");
-        // Use a file path as --log-dir so createDirectories fails.
         int code = ConnectionProbe.run(new String[]{
                 "--log-dir", blocker.toString(),
-                "--connect-timeout-ms", "1000"
-        });
+                "--connect-timeout-ms", "1000",
+                "--run-id", "offline-log"
+        }, Paths.get("missing-root"));
         assertEquals(ConnectionProbe.EXIT_LOG_DIR, code);
         assertTrue(Files.isRegularFile(blocker));
+    }
+
+    @Test
+    public void classifyFailureDetectsWindowsApiMissing() {
+        assertEquals(
+                ConnectionProbe.ERROR_WINDOWS_API_UNAVAILABLE,
+                ConnectionProbe.classifyFailure(new UnsatisfiedLinkError("Unable to load library 'kernel32'")));
+    }
+
+    @Test
+    public void classifyFailureDefaultsToNoBridgeOrWaiting() {
+        assertEquals(
+                ConnectionProbe.ERROR_NO_BRIDGE_OR_WAITING,
+                ConnectionProbe.classifyFailure(new RuntimeException("other")));
     }
 }

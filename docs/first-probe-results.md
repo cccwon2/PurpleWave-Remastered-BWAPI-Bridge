@@ -1,80 +1,64 @@
 # First connection probe results
 
-Date: 2026-11-16  
+Date: 2026-11-16 (updated after harden pass)  
 Branch: `feat/purplewave-connection-probe`  
-JBWAPI pin: `d6003b0b3a6a27944c979fd8dbc6ec8e3c2c753f` (same as PurpleWave `3rdparty/jbwapi`)
+PR: https://github.com/cccwon2/PurpleWave-Remastered-BWAPI-Bridge/pull/1  
+JBWAPI pin: `d6003b0b3a6a27944c979fd8dbc6ec8e3c2c753f` (SHA check enforced)
 
-## Legend (do not collapse these)
+## Legend
 
 | Layer | Meaning |
 |---|---|
-| Build success | Maven compiles probe + pinned JBWAPI sources into shaded JAR |
-| Process run | JVM starts, logs `PROCESS_STARTED` / config handling |
-| IPC connect | Windows shared memory + pipe handshake with a BWAPI server |
+| Build success | Maven compiles probe + pinned JBWAPI sources |
+| Process run | JVM starts, JSONL with `runId` |
+| IPC connect | Windows shared memory + pipe handshake |
 | Match data | `onStart` + periodic frame/resources/units |
 | Full bot | PurpleWave AI — **not attempted** |
 
-## Offline results (this cloud agent VM)
+## Offline / MOCK results (Linux cloud agent)
 
 Host: Linux x86_64, OpenJDK 21 64-bit, Maven 3.8.7, PowerShell 7.7.  
-StarCraft: Remastered: **not present**. BWAPI bridge: **not present**.
+StarCraft: Remastered / BWAPI bridge: **not present**.
 
 | Test | Result | Notes |
 |---|---|---|
-| `mvn -q test` (unit) | **PASS** | ProbeConfig / JsonlLogger / offline exit codes |
-| `mvn -q verify` (includes IT) | **PASS** | Process IT got `EXIT_FAILED` (7) without bridge on Linux |
-| `pwsh scripts/Test-Environment.ps1` | **PASS** (exit 0) | Reports `RealEnv=NO` on Linux |
-| `pwsh scripts/Build-Probe.ps1` | **PASS** | Produces `target/connection-probe-0.1.0.jar` |
-| `pwsh src/test/powershell/ScriptSmoke.Tests.ps1` | **PASS** | Bad Java/workdir/ranges/log-dir; without-bridge exit 7 |
-| Without-bridge probe run | **PASS as failure report** — exit **7** `FAILED` | `UnsatisfiedLinkError: Unable to load library 'kernel32'` within ~80ms. Emitted `PROCESS_STARTED` → `WAITING_FOR_BRIDGE` → `FAILED`. **No** `MATCH_STARTED`. |
-| Real Remastered match start / frame / resources / units / match end | **미실행** | No game + no bridge on this VM |
-| Leftover process check vs StarCraft | **미실행** | N/A without SCR; supervisor designed to kill **probe PID only** |
+| `mvn -q verify` | **PASS** | Unit + process IT |
+| `pwsh …/Harden.Tests.ps1` | **PASS** | Pre-match wait→6; MOCK MATCH_STARTED survives wait; stale runId ignored; space/Korean argv; stderr+exit 6; other PID unaffected; SHA match |
+| `pwsh …/ScriptSmoke.Tests.ps1` | **PASS** | Config / path failures |
+| Without-bridge real jar | exit **7** `FAILED` | `WINDOWS_API_UNAVAILABLE` (`kernel32`); no `MATCH_STARTED` |
+| Real Remastered match / frames / resources | **미실행** | No Windows host in this environment |
+| Windows CI game-less path/exit | **미실행** | No Windows runner attached |
 
-### Sample offline JSONL (abridged)
+### Harden fixes covered by MOCK tests
 
-```text
-PROCESS_STARTED  env … jbwapiCommit=d6003b0… jbwapiSupportedBwapiClientVersion=10003 dataModel=64
-PROCESS_STARTED  Connection probe process started
-WAITING_FOR_BRIDGE  Waiting for Local\bwapi_shared_memory_game_list …
-FAILED  errorCode=java.lang.UnsatisfiedLinkError  Unable to load library 'kernel32'
-```
+- Match-start wait no longer kills after runId-scoped `MATCH_STARTED`
+- Overall run limit is a **separate** optional param (default 0 = off)
+- Stale `MATCH_STARTED` from another `runId` does not clear the wait
+- `ProcessStartInfo.ArgumentList.Add` preserves spaces/Korean (child-verified)
+- Timeout path writes stderr via `[Console]::Error` (not `Write-Error` under Stop) → exit **6**
+- Stop only the supervised probe PID
 
-### Supply units
+MOCK `MATCH_STARTED` ≠ real IPC.
 
-JSONL fields `supplyUsed` / `supplyTotal` are **BWAPI internal** values from `Player.supplyUsed()` / `supplyTotal()`.  
-In-game display supply is typically **internal / 2** (see JBWAPI `Player` javadoc). The probe does not convert.  
-Not observed live (미실행).
+### Supply / CONNECTED / shutdown
 
-### CONNECTED state
+- Supply fields remain BWAPI **internal** units (display ≈ /2) — not live-verified
+- `CONNECTED` still not emitted (no public connect callback)
+- `BWClient` still has no public stop; supervisor kills probe PID only
 
-Not emitted. JBWAPI `BWEventListener` has no IPC-connect callback. See `docs/compatibility-audit.md`.
+## Real-env checklist (Windows operator)
 
-### Shutdown / timeout
+- [ ] Match-start wait while SCR + bridge idle/absent
+- [ ] `MATCH_STARTED` for **this** `runId` when match begins
+- [ ] Frame increases; resources/units vs screen (supply internal vs display)
+- [ ] `MATCH_ENDED`
+- [ ] Timeout stops probe only
+- [ ] Record Java bitness used (32 vs 64)
 
-`BWClient` has no public stop API (`Client.disconnect` is package-private).  
-Probe watchdog interrupts / `System.exit(EXIT_TIMEOUT)` after `--connect-timeout-ms` if match never starts.  
-`scripts/Run-Probe.ps1` additionally supervises and `Stop-Process` on the **probe PID only** — never StarCraft or unrelated Java.  
-On this Linux host the probe failed before the timeout path (Kernel32 missing); Windows-without-bridge timeout remains the intended reconnect-loop case.
+## Distinction
 
-## Real-env checklist (for a Windows operator)
-
-Mark each only when observed against screen:
-
-- [ ] `WAITING_FOR_BRIDGE` while SCR + bridge idle/absent
-- [ ] `MATCH_STARTED` when a match begins with the bot slot attached
-- [ ] `frame` increases over status samples
-- [ ] `minerals` / `gas` / supply / `selfUnitCount` match what is visible (remember supply internal vs display)
-- [ ] `MATCH_ENDED` on game over
-- [ ] Timeout stops probe only; StarCraft remains unless user closes it
-- [ ] Java bitness used recorded here (32 vs 64) with evidence
-
-## Distinction reminder
-
-| Achieved here | Not achieved |
+| Achieved | Not achieved |
 |---|---|
-| Build success | IPC connect |
-| Process run + JSONL failure reporting | Match data |
-| Offline timeout/failure scripts | Remastered compatibility |
+| Build + harden regressions (MOCK) | IPC connect |
+| Offline failure classification | Match data on Remastered |
 | | Full PurpleWave bot |
-
-Offline timeout/failure reporting **≠** Remastered compatibility.

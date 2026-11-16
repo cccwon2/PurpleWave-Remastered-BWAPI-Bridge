@@ -15,14 +15,16 @@ import java.util.Map;
 
 /**
  * Appends one JSON object per line. Unreadable measured fields stay null.
+ * Every line includes {@code runId} so supervisors can ignore stale logs.
  */
 public final class JsonlLogger implements Closeable {
     private final BufferedWriter writer;
     private final PrintStream mirror;
     private final long startEpochMs;
+    private final String runId;
     private final Object lock = new Object();
 
-    public JsonlLogger(Path logFile, PrintStream mirror) throws IOException {
+    public JsonlLogger(Path logFile, PrintStream mirror, String runId) throws IOException {
         Path parent = logFile.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
@@ -32,10 +34,15 @@ public final class JsonlLogger implements Closeable {
                 StandardCharsets.UTF_8));
         this.mirror = mirror;
         this.startEpochMs = System.currentTimeMillis();
+        this.runId = runId == null ? "unknown" : runId;
     }
 
     public long getStartEpochMs() {
         return startEpochMs;
+    }
+
+    public String getRunId() {
+        return runId;
     }
 
     public void log(String level, ProbeState event, Map<String, Object> fields, String message) {
@@ -43,6 +50,7 @@ public final class JsonlLogger implements Closeable {
         row.put("timestamp", Instant.now().toString());
         row.put("level", level == null ? "INFO" : level);
         row.put("event", event == null ? null : event.name());
+        row.put("runId", runId);
         row.put("elapsedMs", System.currentTimeMillis() - startEpochMs);
         putNullable(row, "frame", fields);
         putNullable(row, "playerId", fields);

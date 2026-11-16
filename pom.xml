@@ -18,15 +18,17 @@
     </properties>
 
     <dependencies>
+        <!-- Aligned to PurpleWave pom.xml (5.1.0) for baseline build/test reproducibility.
+             JBWAPI's own pom at d6003b0 declares 5.6.0; we intentionally follow PurpleWave. -->
         <dependency>
             <groupId>net.java.dev.jna</groupId>
             <artifactId>jna</artifactId>
-            <version>5.6.0</version>
+            <version>5.1.0</version>
         </dependency>
         <dependency>
             <groupId>net.java.dev.jna</groupId>
             <artifactId>jna-platform</artifactId>
-            <version>5.6.0</version>
+            <version>5.1.0</version>
         </dependency>
         <dependency>
             <groupId>junit</groupId>
