@@ -72,11 +72,14 @@ if ($ServerProcessId -gt 0) {
 $null = $psi.ArgumentList.Add('-jar')
 $null = $psi.ArgumentList.Add($JarPath)
 
+$jarHash = (Get-FileHash -LiteralPath $JarPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Write-Host "Starting PurpleWave Remaster client"
 Write-Host "  java: $JavaPath"
 Write-Host "  jar:  $JarPath"
+Write-Host "  jar_sha256: $jarHash"
 Write-Host "  cwd:  $GameWorkingDirectory"
 if ($ServerProcessId -gt 0) { Write-Host "  pin:  bwapi.serverProcessId=$ServerProcessId" }
+Write-Host "  Keep this jar_sha256 for retests; do not swap the validated JAR mid-triage."
 
 $proc = [System.Diagnostics.Process]::Start($psi)
 Write-Host "PurpleWave PID $($proc.Id)"

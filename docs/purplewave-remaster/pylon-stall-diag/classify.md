@@ -1,119 +1,88 @@
-# PurpleWave pylon stall — classify (rc3, refined)
+# PurpleWave pylon stall — classify (state-parity priority)
 
-**Status:** Not a live fix. **Not PASS.** No SCR build-encoder patches. Do not merge.
+**Status:** Not a live fix. **Not PASS.** No SCR **build-encoder** patch until state parity shows Build entering the queue. Do not merge.
+
+Canonical store copy: `/cursor/stores/self/docs/purplewave-pylon-stall-classify.md`
+
+## Priority shift (Won)
+
+| Prefer | Deprioritize |
+|---|---|
+| Bridge **state delivery** (SCR → GameData → JBWAPI) for build-hold fields | PW strategy / build-logic edits |
+| Keep the **already-validated PW JAR** (path + SHA-256) | New PW jar that changes construction AI |
+| Fix **wrong input data in the bridge** | Force `canBuild` true / inject Build |
+
+**“No Build” in the observe log is a symptom**, not proof of a PurpleWave defect. It only shows Build was absent from `GameData.unitCommands` for the observed window (or that JBWAPI rejected before queue insert because of **state**).
 
 ## Fix applied / running?
 
 | Item | Result |
 |---|---|
-| Pluto tip (agent) | `dad28ad…` / source `jbwapi_server_v2_rc3` |
-| Won loaded revision | **`jbwapi_server_v2_rc3` (pid 31376)** |
-| Move→`0x14` | Running (Move/`cmd_detail` move present; contrast stale rc2 `0x61`+order 6) |
-| Pylon / supply | Still **9/9**, high minerals, no pylon — **not resolved** |
+| Prior Move tip | **rc3** loaded (pid 31376) — Move→`0x14` working; pylon still missing |
+| This tip | Pluto **`jbwapi_server_v2_rc3_state1`**: rate-limited `jbwapi_build_hold_*` GameData samples (not an encoder change) |
+| Full rc3 paste file | Still missing on disk; prefer Won upload of next `bridge.log` |
 
-## Observe-log caveat (important)
+## Pin the validated JAR (every retest)
 
-Bridge `packet_hex` / `jbwapi_client_cmd_detail` only see commands that already sit in **`GameData.unitCommands`** after the client frame ACK.
+Do **not** rebuild PW unless making a **separate diagnostic** jar.
 
-- **Absence of Build `0c` / `kind":"build"` ≠ proof** PurpleWave never executed `bwapiUnit.build(...)`.
-- It **does** mean: for the observed frames, **no Build UCT was in the shared-memory queue** when the bridge applied (or the pasted window omitted those frames — treat full paste through disconnect as the window).
-- JBWAPI `Unit.build` → `issueCommand` → **`canIssueCommand` / `canBuild` may return false** and never call `game.addUnitCommand` — identical bridge signature to “never called.”
-
-So prior label “A = PW never issues Build” **over-claimed**. Split by boundary below.
-
-## Three boundaries
-
-### 1) PurpleWave construction branch (`Build.scala` → `Commander.build`)
-
-Only reaches `bwapiUnit.build` if:
-
-- `intent.startNow` (`hasSpent \|\| currencyLock.satisfied`)
-- `tile.visible`
-- distance to building center `< 112`
-- minerals/gas ≥ price − 8
-- then `Commander.build` distance to `tile.center` ≤ 5×32 (else **Move again**)
-
-**Hold reasons to record (next run):** startNow, tile, dist to center / tile.center, mins/gas vs price, reserved currency, canBuild judgment, whether code path enters immediately before `bwapiUnit.build`.
-
-### 2) JBWAPI call boundary (`Unit.build` → `issueCommand`)
-
-```text
-build(type, tile)
-  → issueCommand(UnitCommand.build)
-       → if (!canIssueCommand) return false;   // NO queue insert
-       → game.addUnitCommand(...)              // queue insert
+```powershell
+cd C:\Games\PurpleWave
+$jar = (Resolve-Path .\target\PurpleWave-1.0.jar).Path
+Get-FileHash $jar -Algorithm SHA256 | Format-List
+# Record: path + hash. Run-Remaster -JarPath $jar
 ```
 
-`canBuild(type, tile)` ends with:
+`Run-Remaster.ps1` now prints `jar_sha256` on start — keep that same artifact for retests.
 
-```java
-return game.canBuildHere(tilePos, uType, this, /* checkExplored */ true);
-```
+## Build-hold fields only
 
-Priority hypotheses to **test** (not patch around):
+### A) PurpleWave gates before `bwapiUnit.build`
 
-| Hyp | Mechanism |
+| Condition | Reads |
 |---|---|
-| **H-explored** | `checkExplored=true` fails if Snapshot `isExplored` disagrees with screen |
-| **H-buildable** | static `isBuildable` / occupancy / creep / power disagree with Won’s view |
-| **H-blocker** | `getUnitsInRectangle` sees a blocker; builder is excluded by reference (`builder != u`) — verify mapping/identity |
-| **H-path** | `builder.hasPath` to site fails |
-| **H-id** | wrong unit / tile args at call |
+| `intent.startNow` | PW currency/reservation |
+| `tile.visible` | `Game.isVisible` ← `GameData.isVisible` |
+| dist to building center `< 112` | worker `positionX/Y` |
+| minerals/gas ≥ price−8 | `GameData.players[self]` |
+| `Commander` dist ≤ 5×32 else Move | worker position vs `tile.center` |
 
-**Distinguish:** `build()` never entered vs entered with `canBuild=false` / `issued=false` vs `issued=true`.
+### B) JBWAPI `canBuildHere(..., checkExplored=true)`
 
-### 3) Command queue + bridge
+explored / buildable / occupied / creep / power / path — from Snapshot→GameData. Builder excluded by object identity.
 
-| Signal | Layer |
-|---|---|
-| `jbwapi_client_commands_apply` + `unitCommandCount` | Queue nonempty (any UCT) |
-| `jbwapi_client_cmd_detail` `kind":"build"` | Build UCT present in queue at apply (rc3+) |
-| `packet_hex` …`0c`… | Legacy Build encoded + submitted |
-| reject / unsupported / translate_rejects | Bridge drop/encode fail |
+## Three-way compare (same frame when possible)
 
-**Observed (rc3 paste summary):** Move/gather/train + `coords_patched`; **no** Build `0c` / no `kind":"build"` in window → **queue had no Build UCT** for those frames. That rules out **B/C for the observed window** only if the paste is complete; it does **not** rule out boundary-2 reject.
+1. Raw SCR (what Snapshot reads)  
+2. Bridge serialize → **`jbwapi_build_hold_state` / `jbwapi_build_hold_worker`**  
+3. JBWAPI/PW read (same shared GameData; optional separate diag JAR only if (2) looks correct)
 
-Log-filter note: `cmd_detail` is rate-capped (≤4 build/move lines per frame) but would still show **some** builds if any Build UCTs existed. Zero across ~2.7k frames ⇒ no Build in queue for that match, not a single-frame miss.
+Compare: probe pos/tile/order/completed/owner; minerals; site buildable/explored/occupied/visible; self-obstacle; frame mix.
 
-## Refined stage (evidence now)
+## Refined stages
 
-| Stage | Meaning | Status |
+| Stage | Meaning | When |
 |---|---|---|
-| **A1** | PW never reaches `bwapiUnit.build` (Move-only / gates) | **Open** — needs PW `build-gate` / pre-call log |
-| **A2** | `build` called; JBWAPI rejects before queue (`canIssueCommand`/`canBuildHere`) | **Open** — needs `canBuild`/`issued` log; **compatible** with observe log |
-| **B** | Build in queue; bridge drops/rejects | **Unlikely in observe window** (no `kind":"build"`, no reject-of-Build) |
-| **C** | `0c` submitted; SCR no construction | **Unlikely in observe window** (no `0c`) |
-| **D** | Bad construction state feedback → idle/wait | **Hypothesis only** (could feed A1/A2) |
+| **S0** | Bad/mismatched **state** for build-hold fields | **Investigate first** |
+| **A1** | PW never reaches `build()` on good state | After S0 OK |
+| **A2** | `build()` called; JBWAPI rejects on correct state | After S0 OK |
+| **B/C** | Queue / SCR construction | Only after Build enters `unitCommands` |
 
-**Confirmed:** rc3 loaded; economy train/gather work; **no pylon**; observe layer shows **no queued Build**.  
-**Not confirmed:** A1 vs A2. **Do not** treat observe-only as “PW never called build.”
+Prior “A confirmed from no 0c” is **withdrawn** as a PW-defect claim.
 
-## Changes / tests this turn
+## Won retest
 
-- **No** SCR/build-encoder patch; **no** force `canBuild` / forced Build inject.
-- Refined classify doc + scoped **three-boundary diagnostics** for Won (see companion `purplewave-remaster-pylon-build-gate-diag.md`).
-- No new gameless encoder test (encoder not under suspicion until A2 ruled out and Build enters queue).
+```powershell
+cd C:\Games\Pluto-Remastered-v2
+git pull origin cursor/purplewave-ai-command-path-e83e
+& .\scripts\build.ps1
+# Must print: jbwapi_server_v2_rc3_state1
 
-## Next live run — exact lines Won must capture
-
-1. Bridge: `jbwapi_server_started` → must still be **`jbwapi_server_v2_rc3`**.
-2. Apply PW diag (companion doc) → `mvn -DskipTests package` → retest C.
-3. Grep PW log:
-
-```text
-build-gate
-build-precall
-build-call
+cd C:\Games\PurpleWave
+Get-FileHash .\target\PurpleWave-1.0.jar -Algorithm SHA256
+# C1/C2 with that same -JarPath
 ```
 
-Interpretation:
+Greps: `jbwapi_server_started`, `jbwapi_build_hold_state`, `jbwapi_build_hold_worker`, `kind":"build"`, `packet_hex":"0c`
 
-| Pattern | Boundary |
-|---|---|
-| `build-gate why=startNow=false\|tile.notVisible\|dist=…\|minerals\|gas` and **no** `build-precall` | **A1** |
-| `build-precall` + `build-call canBuild=false` / `issued=false` + reason fields | **A2** |
-| `build-call issued=true` + bridge still no `kind":"build"` / `0c` | Queue/IPC anomaly → revisit **B** with full unfiltered log |
-| `kind":"build"` + `0c` but no pylon | **C** (then — and only then — SCR construction path) |
-
-4. Also note one stalled probe: frame, unit id, goal tile, order next frame, minerals, reserved if logged.
-5. **PASS only** when Won sees pylon warp + supply > 9/9.
+**PASS** only when Won sees pylon warp + supply leave 9/9.
