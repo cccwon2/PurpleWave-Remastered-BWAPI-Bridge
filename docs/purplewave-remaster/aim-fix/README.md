@@ -7,36 +7,56 @@ Combat.scala: not found: value Aim
 Fight.scala: not found: value Aim
 ```
 
-## Apply on Windows (PurpleWave clone)
+## Correct destinations (do not shorten these paths)
 
-From `C:\Games\PurpleWave` (or your clone), on any branch based on `88c1056aa` / `master`:
+There is **one** `Techniques.scala` in the repo. Package = `Micro.Actions.Combat.Decisionmaking`.
 
-### Option A — patch
+| Source in this folder | **Exact** destination under PurpleWave |
+|---|---|
+| `Techniques.scala` | `src\Micro\Actions\Combat\Decisionmaking\Techniques.scala` |
+| `Fight.scala` | `src\Micro\Actions\Combat\Fight.scala` |
 
-```powershell
-git apply docs\purplewave-remaster\aim-fix\0001-Restore-Aim-combat-Technique-removed-by-tip-88c1056a.patch
-# If applying from Bridge checkout instead:
-git -C C:\Games\PurpleWave apply C:\Games\PurpleWave-Remastered-BWAPI-Bridge\docs\purplewave-remaster\aim-fix\0001-Restore-Aim-combat-Technique-removed-by-tip-88c1056a.patch
+### Wrong path (causes `Techniques is already defined`)
+
+```
+src\Micro\Actions\Combat\Techniques.scala   ← WRONG — must not exist
 ```
 
-### Option B — copy files
+If Maven reports `Techniques is already defined as object Techniques` at `Combat\Techniques.scala`, you copied into `Combat\` instead of `Combat\Decisionmaking\`.
+
+## Exact fix for Won (after bad copy)
 
 ```powershell
-Copy-Item ...\aim-fix\Techniques.scala `
-  C:\Games\PurpleWave\src\Micro\Actions\Combat\Decisionmaking\Techniques.scala -Force
-Copy-Item ...\aim-fix\Fight.scala `
-  C:\Games\PurpleWave\src\Micro\Actions\Combat\Fight.scala -Force
-```
+cd C:\Games\PurpleWave
 
-Then:
+# 1) Delete the stray duplicate (wrong path)
+Remove-Item -LiteralPath '.\src\Micro\Actions\Combat\Techniques.scala' -Force -ErrorAction SilentlyContinue
 
-```powershell
+# 2) Copy into the Decisionmaking folder (correct path)
+$src = 'C:\Games\PurpleWave-Remastered-BWAPI-Bridge\docs\purplewave-remaster\aim-fix'
+Copy-Item "$src\Techniques.scala" `
+  '.\src\Micro\Actions\Combat\Decisionmaking\Techniques.scala' -Force
+Copy-Item "$src\Fight.scala" `
+  '.\src\Micro\Actions\Combat\Fight.scala' -Force
+
+# 3) Confirm only one Techniques.scala remains
+Get-ChildItem -Recurse -Filter Techniques.scala .\src
+# Expect exactly: ...\Combat\Decisionmaking\Techniques.scala
+
 mvn -DskipTests package
+```
+
+## Option A — patch (avoids path mistakes)
+
+```powershell
+git -C C:\Games\PurpleWave apply `
+  C:\Games\PurpleWave-Remastered-BWAPI-Bridge\docs\purplewave-remaster\aim-fix\0001-Restore-Aim-combat-Technique-removed-by-tip-88c1056a.patch
+# If a stray Combat\Techniques.scala already exists, delete it first (step 1 above).
 ```
 
 ## What changed
 
-1. Restore `object Aim extends Technique` in `Techniques.scala`
+1. Restore `object Aim extends Technique` in `Decisionmaking\Techniques.scala`
 2. Allow `Fight` → `Aim` transition so `Combat.transition(Aim, !canMove)` can fire
 3. Remove erroneous `Aim(unit)` from `Fight.scala` (Aim is not an `Action`; stand-and-shoot is `Combat.aim()`)
 
