@@ -186,7 +186,8 @@ Commands / speed changes: **not used** by the probe (out of scope / disallowed).
 
 ## 9. Next blockers
 
-1. **Obtain authorized Remastered BWAPI bridge** sources/binaries/version notes compatible with client version `10003` and the shared-memory layout above — or an explicit compatibility matrix if the bridge speaks a different version (would require a coordinated pin change, not done here).
-2. **Windows machine** with StarCraft: Remastered + that bridge + Java for real probe runs.
+1. **Obtain a Remastered host that publishes classic BWAPI shared-memory server surfaces** (`Local\bwapi_shared_memory_game_list`, per-PID mapping, pipe) at client version `10003`. Audited Pluto-Remastered-v2 is **in-process only** today — see `docs/bridge-selection.md`.
+2. **Windows machine** with StarCraft: Remastered + that server + Java for real probe runs (`docs/windows-real-env-guide.md`).
 3. **Resolve Java bitness** experimentally; do not trust either README alone.
 4. Confirm working-directory / `bwapi-data` expectations for the Remastered install layout (PurpleWave assumes classic Brood War paths).
+5. Optional: measure Pluto MSVC `sizeof(GameData)` vs JBWAPI `33017048` before designing a server mirror.

@@ -1,0 +1,116 @@
+# Game-less Windows verification for the read-only connection probe.
+# Does NOT prove Remastered IPC compatibility. No game/bridge/secrets.
+name: windows-probe
+
+on:
+  push:
+    branches:
+      - feat/purplewave-connection-probe
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  windows-game-less:
+    name: Windows game-less probe tests
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (recursive submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Verify JBWAPI pin SHA
+        shell: pwsh
+        run: |
+          $expected = "d6003b0b3a6a27944c979fd8dbc6ec8e3c2c753f"
+          Push-Location 3rdparty/jbwapi
+          $actual = (git rev-parse HEAD).Trim()
+          Pop-Location
+          Write-Host "JBWAPI HEAD=$actual expected=$expected"
+          if ($actual -ne $expected) {
+            throw "JBWAPI submodule SHA mismatch"
+          }
+
+      - name: Set up JDK 8 (x64 baseline only)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+          architecture: x64
+          cache: maven
+
+      - name: Show Java / PowerShell versions
+        shell: pwsh
+        run: |
+          Write-Host "PSVersion=$($PSVersionTable.PSVersion)"
+          if ($PSVersionTable.PSVersion.Major -lt 7) {
+            throw "PowerShell 7+ required for safe ArgumentList.Add launches"
+          }
+          java -version 2>&1 | Write-Host
+          # Document bitness; this job is x64 baseline, NOT Remastered proof.
+          $javaHome = $env:JAVA_HOME
+          Write-Host "JAVA_HOME=$javaHome"
+          Write-Host "NOTE: Java 8 x64 is a CI baseline only — not Remastered compatibility evidence."
+
+      - name: Maven verify (unit + IT)
+        shell: pwsh
+        run: |
+          mvn -B verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: PowerShell harden regressions (MOCK + no-bridge)
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File src/test/powershell/Harden.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File src/test/powershell/ScriptSmoke.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Windows no-bridge real jar (expect timeout, not kernel32)
+        shell: pwsh
+        run: |
+          $jar = "target/connection-probe-0.1.0.jar"
+          if (-not (Test-Path -LiteralPath $jar)) { throw "missing jar" }
+          $logDir = Join-Path $env:RUNNER_TEMP ("probe-nobridge-" + [guid]::NewGuid())
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+          $runId = "ci-nobridge"
+          pwsh -NoProfile -File scripts/Run-Probe.ps1 `
+            -LogDirectory $logDir `
+            -MatchStartWaitMs 8000 `
+            -StatusIntervalMs 500 `
+            -RunId $runId
+          $code = $LASTEXITCODE
+          Write-Host "no-bridge exit=$code (Windows expect 6 timeout; Linux CI would be 7 kernel32)"
+          # On Windows runners Kernel32 exists; without a BWAPI server the probe
+          # should wait then time out (6), not fail as WINDOWS_API_UNAVAILABLE.
+          if ($code -ne 6 -and $code -ne 7) {
+            throw "Unexpected no-bridge exit code $code"
+          }
+          $jsonl = Join-Path $logDir "connection-probe-$runId.jsonl"
+          if (-not (Test-Path -LiteralPath $jsonl)) { throw "missing jsonl" }
+          $text = Get-Content -LiteralPath $jsonl -Raw
+          if ($text -match '"event":"MATCH_STARTED"') {
+            throw "no-bridge run must not emit MATCH_STARTED"
+          }
+          # Prefer timeout classification when exit 6.
+          if ($code -eq 6) {
+            Write-Host "PASS: Windows no-bridge match-start wait exceeded (exit 6)"
+          } else {
+            Write-Warning "Got exit 7 on Windows no-bridge; inspect JSONL errorCode (not assumed Remastered)"
+          }
+
+      - name: Upload failure/test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-probe-reports
+          path: |
+            target/surefire-reports/**
+            target/failsafe-reports/**
+            target/*.jar
+            logs/**
+          if-no-files-found: warn

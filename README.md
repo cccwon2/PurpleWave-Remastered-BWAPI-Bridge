@@ -97,6 +97,10 @@ pwsh -File src/test/powershell/ScriptSmoke.Tests.ps1
 
 **MOCK / offline pass ≠ Remastered compatibility.** Real match checks: [`docs/first-probe-results.md`](docs/first-probe-results.md) (미실행 until Windows + SCR + bridge).
 
+Bridge candidates: [`docs/bridge-selection.md`](docs/bridge-selection.md).  
+Operator checklist: [`docs/windows-real-env-guide.md`](docs/windows-real-env-guide.md).  
+Game-less Windows CI: `.github/workflows/windows-probe.yml` (Java 8 x64 **baseline only**).
+
 ## Limitations
 
 - Requires a **Windows** BWAPI server exposing JBWAPI mappings/pipes and client version `10003`

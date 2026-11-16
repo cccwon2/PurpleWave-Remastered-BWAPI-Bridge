@@ -27,7 +27,8 @@ StarCraft: Remastered / BWAPI bridge: **not present**.
 | `pwsh …/ScriptSmoke.Tests.ps1` | **PASS** | Config / path failures |
 | Without-bridge real jar | exit **7** `FAILED` | `WINDOWS_API_UNAVAILABLE` (`kernel32`); no `MATCH_STARTED` |
 | Real Remastered match / frames / resources | **미실행** | No Windows host in this environment |
-| Windows CI game-less path/exit | **미실행** | No Windows runner attached |
+| Windows CI game-less path/exit | **workflow added** — see Actions for run result | `.github/workflows/windows-probe.yml` (Java 8 x64 baseline; not Remastered proof) |
+| Bridge candidate audit | See `docs/bridge-selection.md` | Pluto-v2 = in-process only; needs server extension for JBWAPI |
 
 ### Harden fixes covered by MOCK tests
 
