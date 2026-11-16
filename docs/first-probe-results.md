@@ -1,7 +1,8 @@
 # First connection probe results
 
-Date: 2026-11-16 (updated after harden pass)  
+Date: 2026-11-16 (updated after Windows CI green on `c512dc5`)  
 Branch: `feat/purplewave-connection-probe`  
+HEAD: `c512dc5d6ad47cab057ca7e95088e3794260fc2a`  
 PR: https://github.com/cccwon2/PurpleWave-Remastered-BWAPI-Bridge/pull/1  
 JBWAPI pin: `d6003b0b3a6a27944c979fd8dbc6ec8e3c2c753f` (SHA check enforced)
 
@@ -25,9 +26,10 @@ StarCraft: Remastered / BWAPI bridge: **not present**.
 | `mvn -q verify` | **PASS** | Unit + process IT |
 | `pwsh …/Harden.Tests.ps1` | **PASS** | Pre-match wait→6; MOCK MATCH_STARTED survives wait; stale runId ignored; space/Korean argv; stderr+exit 6; other PID unaffected; SHA match |
 | `pwsh …/ScriptSmoke.Tests.ps1` | **PASS** | Config / path failures |
-| Without-bridge real jar | exit **7** `FAILED` | `WINDOWS_API_UNAVAILABLE` (`kernel32`); no `MATCH_STARTED` |
-| Real Remastered match / frames / resources | **미실행** | No Windows host in this environment |
-| Windows CI game-less path/exit | **workflow added** — see Actions for run result | `.github/workflows/windows-probe.yml` (Java 8 x64 baseline; not Remastered proof) |
+| Without-bridge real jar (Linux) | exit **7** `FAILED` | `WINDOWS_API_UNAVAILABLE` (`kernel32`); **not** a Windows no-bridge result |
+| Real Remastered match / frames / resources | **미실행** | No game/bridge in agent or CI |
+| Windows CI game-less | **workflow added + CI green** on `c512dc5` | push https://github.com/cccwon2/PurpleWave-Remastered-BWAPI-Bridge/actions/runs/43895857432 ; PR https://github.com/cccwon2/PurpleWave-Remastered-BWAPI-Bridge/actions/runs/43895869049 — Java 8 x64 **baseline only**, not Remastered proof |
+| Windows no-bridge real jar (CI) | exit **6** timeout | `WAITING_FOR_BRIDGE`; no `MATCH_STARTED`; step then `exit 0` after validation (`c512dc5` fix) |
 | Bridge candidate audit | See `docs/bridge-selection.md` | Pluto-v2 = in-process only; needs server extension for JBWAPI |
 
 ### Harden fixes covered by MOCK tests
